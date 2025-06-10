@@ -1,0 +1,406 @@
+<!DOCTYPE html> 
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Flash Loan Arbitrage Interface</title>
+  <script src="https://cdn.jsdelivr.net/npm/ethers@5.7.2/dist/ethers.umd.min.js"></script>
+  <style>
+    body {
+      background-color: #001f2d;
+      color: #fff;
+      font-family: sans-serif;
+      padding: 20px;
+    }
+    .large-display {
+      font-size: 1.5em;
+      font-weight: bold;
+      margin: 10px 0;
+    }
+    .profitable {
+      color: #00ff00;
+    }
+    button {
+      padding: 10px;
+      margin-right: 10px;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+    }
+    #startBtn, #stopBtn {
+      background-color: #00ff00;
+      color: #000;
+    }
+    input {
+      margin: 5px 0;
+      padding: 5px;
+    }
+    table {
+      width: 100%;
+      margin-top: 10px;
+      border-collapse: collapse;
+    }
+    th, td {
+      padding: 6px;
+      border: 1px solid #333;
+    }
+    a { color: #00ffff; }
+    #logTextArea {
+      width: 100%;
+      height: 300px;
+      margin-top: 10px;
+      background: #000;
+      color: #0f0;
+      padding: 10px;
+      font-family: monospace;
+      overflow-y: scroll;
+    }
+  </style>
+</head>
+<body>
+
+<h1>Flash Loan Arbitrage</h1>
+
+<p><strong>Wallet:</strong> <span id="wallet">Not connected</span></p>
+<p><strong>USDC Balance:</strong> <span id="balance">0.00</span></p>
+
+<div>
+  <label>Amount In (USDC):</label><br>
+  <input type="number" id="amountIn" value="10" step="0.01"><br>
+
+  <label>Minimum Profit (USDC):</label><br>
+  <input type="number" id="minProfit" value="0.0000001" step="0.0000001"><br>
+
+  <label>Slippage (%):</label><br>
+  <input type="number" id="slippage" value="0.5" step="0.1"><br>
+
+  <label>Gas Limit:</label><br>
+  <input type="number" id="gasLimit" value="1000000"><br>
+
+  <label>Repeat Every (sec):</label><br>
+  <input type="number" id="scanInterval" value="1"><br>
+
+  <label><input type="checkbox" id="onlyIfProfitable" checked> Only trade if profitable</label><br>
+  <label><input type="checkbox" id="autoConfirmToggle"> Auto Confirm Trades</label><br><br>
+
+  <button id="startBtn" onclick="startTrading()">Start Trading</button>
+  <button id="stopBtn" onclick="stopTrading()" disabled>Stop Trading</button>
+  <button onclick="connectWallet()">🔌 Connect Wallet</button>
+  <button onclick="approveUSDC()">✅ Approve USDC</button>
+</div>
+
+<p class="large-display" id="arbDisplay">Arbitrage Info will appear here...</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Time</th>
+      <th>Token</th>
+      <th>Buy DEX</th>
+      <th>Sell DEX</th>
+      <th>Profit ($)</th>
+      <th>Profit (%)</th>
+      <th>Status</th>
+      <th>Tx</th>
+    </tr>
+  </thead>
+  <tbody id="logTable"></tbody>
+</table>
+
+<textarea id="logTextArea" readonly></textarea>
+
+<script>
+const CONTRACT_ADDRESS = "0x98BD86aDa64DC52E60392a43050fad5E9cAcb62F";
+const CONTRACT_ABI = [
+	{
+		"inputs": [],
+		"stateMutability": "nonpayable",
+		"type": "constructor"
+	},
+	{
+		"anonymous": false,
+		"inputs": [
+			{
+				"indexed": false,
+				"internalType": "address",
+				"name": "tokenIn",
+				"type": "address"
+			},
+			{
+				"indexed": false,
+				"internalType": "address",
+				"name": "tokenOut",
+				"type": "address"
+			},
+			{
+				"indexed": false,
+				"internalType": "uint256",
+				"name": "inputAmount",
+				"type": "uint256"
+			},
+			{
+				"indexed": false,
+				"internalType": "uint256",
+				"name": "outputAmount",
+				"type": "uint256"
+			},
+			{
+				"indexed": false,
+				"internalType": "uint256",
+				"name": "profit",
+				"type": "uint256"
+			}
+		],
+		"name": "ArbitrageExecuted",
+		"type": "event"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "address",
+				"name": "router1",
+				"type": "address"
+			},
+			{
+				"internalType": "address",
+				"name": "router2",
+				"type": "address"
+			},
+			{
+				"internalType": "address",
+				"name": "tokenIn",
+				"type": "address"
+			},
+			{
+				"internalType": "address",
+				"name": "tokenOut",
+				"type": "address"
+			},
+			{
+				"internalType": "uint256",
+				"name": "amountIn",
+				"type": "uint256"
+			},
+			{
+				"internalType": "uint256",
+				"name": "minProfit",
+				"type": "uint256"
+			}
+		],
+		"name": "executeArbitrage",
+		"outputs": [],
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
+		"inputs": [],
+		"name": "owner",
+		"outputs": [
+			{
+				"internalType": "address",
+				"name": "",
+				"type": "address"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "address",
+				"name": "token",
+				"type": "address"
+			}
+		],
+		"name": "withdrawToken",
+		"outputs": [],
+		"stateMutability": "nonpayable",
+		"type": "function"
+	}
+];
+const TOKENS = [
+  { symbol: "USDC", address: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174", decimals: 6 },
+  { symbol: "WETH", address: "0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619", decimals: 18 },
+    { symbol: "USDC", address: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174", decimals: 6 },
+    { symbol: "WETH", address: "0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619", decimals: 18 },
+    { symbol: "WBTC", address: "0x1BFD67037B42Cf73acF2047067bd4F2C47D9BfD6", decimals: 8 },
+    { symbol: "AAVE", address: "0xD6DF932A45C0f255f85145f286eA0b292B21C90B", decimals: 18 },
+  { symbol: "AAVE", address: "0xD6DF932A45C0f255f85145f286eA0b292B21C90B", decimals: 18 },
+  { symbol: "ANKR", address: "0x101A023270368c0D50BFfb62780F4aFd4ea79C35", decimals: 18 },
+  { symbol: "APE", address: "0xB7b31a6BC18e48888545CE79e83E06003bE70930", decimals: 18 },
+  { symbol: "AVAX", address: "0x2C89bbc92BD86F8075d1DEcc58C7F4E0107f286b", decimals: 18 },
+  { symbol: "BAL", address: "0x9a71012b13ca4d3d0cdc72a177df3ef03b0e76a3", decimals: 18 },
+  { symbol: "BAT", address: "0x3Cef98bb43d732E2F285eE605a8158cDE967D219", decimals: 18 },
+  { symbol: "BUSD", address: "0xdab529f40e671a1d4bf91361c21bf9f0c9712ab7", decimals: 18 },
+  { symbol: "CEL", address: "0xd85d1e945766fea5eda9103f918bd915fbca63e6", decimals: 4 },
+  { symbol: "COMP", address: "0x8505b9d2254A7Ae468c0E9dd10Ccea3A837aef5c", decimals: 18 },
+  { symbol: "CRV", address: "0x172370d5Cd63279eFa6d502DAB29171933a610AF", decimals: 18 },
+  { symbol: "DAI", address: "0x8f3Cf7ad23Cd3CaDbD9735AFf958023239c6A063", decimals: 18 },
+  { symbol: "DIMO", address: "0xe261d618a959afffd53168cd07d12e37b26761db", decimals: 18 },
+  { symbol: "EURS", address: "0xe111178a87a3bff0c8d18decba5798827539ae99", decimals: 2 },
+  { symbol: "FEHU", address: "0x9699eb5ada0843f0e9bd4438930cdd5325073ede", decimals: 18 },
+  { symbol: "FRAX", address: "0x45c32fA6DF82ead1e2EF74d17b76547EDdFaFF89", decimals: 18 },
+  { symbol: "FRXETH", address: "0xEe327F889d5947c1dc1934Bb208a1E792F953E96", decimals: 18 },
+  { symbol: "GHST", address: "0x385eeac5cb85a38a9a07a70c73e0a3271cfb54a7", decimals: 18 },
+  { symbol: "GMT", address: "0x714DB550b574b3E927af3D93E26127D15721D4C2", decimals: 8 },
+  { symbol: "GRT", address: "0x5fe2B58c013d7601147DcdD68C143A77499f5531", decimals: 18 },
+  { symbol: "IPMB", address: "0xFF22c94FFb6bB5d1DF18bEb5fd1dFE7583D3B214", decimals: 6 },
+  { symbol: "LDO", address: "0xC3C7d422809852031b44ab29EEC9F1EfF2A58756", decimals: 18 },
+  { symbol: "LINK", address: "0x53E0bca35eC356BD5ddDFebbD1Fc0fD03FaBad39", decimals: 18 },
+  { symbol: "MANA", address: "0xA1c57f48F0Deb89f569dFbE6E2B7f46D33606fD4", decimals: 18 },
+  { symbol: "MASK", address: "0x2B9E7ccDF0F4e5B24757c1E1a80e311E34Cb10c7", decimals: 18 },
+  { symbol: "MATIC", address: "0x0000000000000000000000000000000000001010", decimals: 18 },
+  { symbol: "MKR", address: "0x6f7C932e7684666C9fd1d44527765433e01fF61d", decimals: 18 },
+  { symbol: "MOCA", address: "0xf944e35f95e819e752f3ccb5faf40957d311e8c5", decimals: 18 },
+  { symbol: "NEXO", address: "0x41b3966B4FF7b427969ddf5da3627d6AEAE9a48E", decimals: 18 },
+  { symbol: "OM", address: "0xC3Ec80343D2bae2F8E680FDADDe7C17E71E114ea", decimals: 18 },
+  { symbol: "PMT", address: "0x971327539Fc22B84887EF964529E2555cBD0fe97", decimals: 18 },
+  { symbol: "QUICK", address: "0x831753dd7087cac61ab5644b308642cc1c33dc13", decimals: 18 },
+  { symbol: "RETH", address: "0x0266F4F08D82372CF0FcbCCc0Ff74309089c74d1", decimals: 18 },
+  { symbol: "RNDR", address: "0x61299774020dA444Af134c82fa83E3810b309991", decimals: 18 },
+  { symbol: "ROUTE", address: "0x16eccfdbb4ee1a85a33f3a9b21175cd7ae753db4", decimals: 18 },
+  { symbol: "RPL", address: "0x7205705771547cF79201111B4bd8aaF29467b9eC", decimals: 18 },
+  { symbol: "SAND", address: "0xBbba073C31bF03b8ACf7c28EF0738DeCF3695683", decimals: 18 },
+  { symbol: "SFRXETH", address: "0x6d1FdBB266fCc09A16a22016369210A15bb95761", decimals: 18 },
+  { symbol: "SNX", address: "0x50B728D8D964fd00C2d0AAD81718b71311feF68a", decimals: 18 },
+  { symbol: "SOL", address: "0x7DfF46370e9eA5f0Bad3C4E29711aD50062EA7A4", decimals: 18 },
+  { symbol: "SUPER", address: "0xa1428174F516F527fafdD146b883bB4428682737", decimals: 18 },
+  { symbol: "SUSHI", address: "0x0b3f868e0be5597d5db7feb59e1cadbb0fdda50a", decimals: 18 },
+  { symbol: "TEL", address: "0xdf7837de1f2fa4631d716cf2502f8b230f1dcc32", decimals: 2 },
+  { symbol: "TUT", address: "0x0493D38CA81bD42cE0eEAC5Db220231dD836f0ad", decimals: 18 },
+  { symbol: "UNI", address: "0xb33eaad8d922b1083446dc23f610c2567fb5180f", decimals: 18 },
+  { symbol: "USDC", address: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359", decimals: 6 },
+  { symbol: "USDT", address: "0xc2132d05d31c914a87c6611c10748aeb04b58e8f", decimals: 6 },
+  { symbol: "WBTC", address: "0x1bfd67037b42cf73acf2047067bd4f2c47d9bfd6", decimals: 8 },
+  { symbol: "WETH", address: "0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619", decimals: 18 },
+  { symbol: "WOO", address: "0x1B815d120B3eF02039Ee11dC2d33DE7aA4a8C603", decimals: 18 },
+  { symbol: "XSGD", address: "0xdc3326e71d45186f113a2f448984ca0e8d201995", decimals: 6 },
+  { symbol: "ZRO", address: "0x6985884C4392D348587B19cb9eAAf157F13271cd", decimals: 18 },
+  { symbol: "AAVE", address: "0xD6DF932A45C0f255f85145f286eA0b292B21C90B", decimals: 18 },
+  { symbol: "WBTC", address: "0x1BFD67037B42Cf73acF2047067bd4F2C47D9BfD6", decimals: 8 },
+  { symbol: "AAVE", address: "0xD6DF932A45C0f255f85145f286eA0b292B21C90B", decimals: 18 }
+];
+
+const ROUTERS = {
+  quickswap: "0xa5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff",
+       apeswap: "0xC0788A3aD43d79aa53B09c2EaCc313A787d1d607",
+     balancer: "0xBA12222222228d8Ba445958a75a0704d566BF2C8",
+     firebird: "0x8e0c0edB9c22008e7F3fC4b29A2CD78d5fC7E8a9",
+      jetswap: "0x578375c3af7D61586c2C3A7BA87d2eEd640EFA40",
+  quickswapv3: "0x9AAb3f75489902f3a48495025729a0AF77d4b11e",
+    uniswapv3: "0xE592427A0AEce92De3Edee1F18E0157C05861564",
+    waultswap: "0xa98ae4A6610849fE61A45Ab2f3DcbC2c98696e82",
+  sushiswap: "0x1b02da8cb0d097eb8d57a175b88c7d8b47997506",
+  dfyn: "0xA102072A4C07F06EC3B4900FDC4C7B80b6c57429"
+};
+
+let provider, signer, user, interval;
+
+async function connectWallet() {
+  provider = new ethers.providers.Web3Provider(window.ethereum);
+  await provider.send("eth_requestAccounts", []);
+  signer = provider.getSigner();
+  user = await signer.getAddress();
+  document.getElementById("wallet").textContent = user;
+  updateBalance();
+}
+
+async function updateBalance() {
+  const usdc = new ethers.Contract(TOKENS[0].address, ["function balanceOf(address) view returns (uint256)"], provider);
+  const bal = await usdc.balanceOf(user);
+  document.getElementById("balance").textContent = (bal / 1e6).toFixed(2);
+}
+
+async function approveUSDC() {
+  const amount = ethers.constants.MaxUint256;
+  const usdc = new ethers.Contract(TOKENS[0].address, ["function approve(address,uint256) returns (bool)"], signer);
+  const tx = await usdc.approve(CONTRACT_ADDRESS, amount);
+  await tx.wait();
+  logText("✅ USDC Approved for Arbitrage Contract");
+}
+
+function logText(msg) {
+  const time = new Date().toLocaleTimeString();
+  const logBox = document.getElementById("logTextArea");
+  logBox.value += `[${time}] ${msg}\n`;
+  logBox.scrollTop = logBox.scrollHeight;
+}
+
+function startTrading() {
+  clearInterval(interval);
+  document.getElementById("startBtn").disabled = true;
+  document.getElementById("stopBtn").disabled = false;
+  const speed = parseInt(document.getElementById("scanInterval").value) * 1000;
+  interval = setInterval(scanArbitrage, speed);
+  logText("🚀 STARTING SCAN...");
+}
+
+function stopTrading() {
+  clearInterval(interval);
+  document.getElementById("startBtn").disabled = false;
+  document.getElementById("stopBtn").disabled = true;
+  logText("🛑 SCAN STOPPED.");
+}
+
+async function scanArbitrage() {
+  const amountIn = parseFloat(document.getElementById("amountIn").value);
+  const minProfit = parseFloat(document.getElementById("minProfit").value);
+  const slippage = parseFloat(document.getElementById("slippage").value);
+  const autoConfirm = document.getElementById("autoConfirmToggle").checked;
+  const onlyIfProfitable = document.getElementById("onlyIfProfitable").checked;
+  const gasLimit = parseInt(document.getElementById("gasLimit").value);
+
+  const amountInParsed = ethers.utils.parseUnits(amountIn.toString(), TOKENS[0].decimals);
+  const minProfitParsed = ethers.utils.parseUnits(minProfit.toString(), TOKENS[0].decimals);
+
+  for (let token of TOKENS.slice(1)) {
+    for (let buy in ROUTERS) {
+      for (let sell in ROUTERS) {
+        if (buy === sell) continue;
+        try {
+          const routerBuy = new ethers.Contract(ROUTERS[buy], ["function getAmountsOut(uint,address[]) view returns (uint[])"], provider);
+          const routerSell = new ethers.Contract(ROUTERS[sell], ["function getAmountsOut(uint,address[]) view returns (uint[])"], provider);
+
+          const outToken = await routerBuy.getAmountsOut(amountInParsed, [TOKENS[0].address, token.address]);
+          const backToUSDC = await routerSell.getAmountsOut(outToken[1], [token.address, TOKENS[0].address]);
+
+          const profit = backToUSDC[1].sub(amountInParsed);
+          const realProfit = parseFloat(ethers.utils.formatUnits(profit, TOKENS[0].decimals));
+          const pct = (realProfit / amountIn) * 100;
+
+          if (!onlyIfProfitable || realProfit >= minProfit) {
+            const time = new Date().toLocaleTimeString();
+            document.getElementById("arbDisplay").textContent = `✅ ${token.symbol}: $${realProfit.toFixed(6)} (${pct.toFixed(2)}%) via ${buy} → ${sell}`;
+            document.getElementById("arbDisplay").className = "large-display profitable";
+
+            logText(`🟢 OPPORTUNITY: ${token.symbol} Buy @ ${buy} → Sell @ ${sell} | Profit: $${realProfit.toFixed(6)} | ${pct.toFixed(2)}%`);
+
+            if (autoConfirm) {
+              const arb = new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, signer);
+              const tx = await arb.executeArbitrage(
+                ROUTERS[buy], ROUTERS[sell], TOKENS[0].address, token.address,
+                amountInParsed, minProfitParsed,
+                { gasLimit }
+              );
+              const receipt = await tx.wait();
+              document.getElementById("logTable").innerHTML += `<tr>
+                <td>${time}</td><td>${token.symbol}</td><td>${buy}</td><td>${sell}</td>
+                <td>$${realProfit.toFixed(6)}</td><td>${pct.toFixed(2)}%</td><td>✅</td>
+                <td><a href="https://polygonscan.com/tx/${receipt.transactionHash}" target="_blank">${receipt.transactionHash.slice(0, 10)}...</a></td>
+              </tr>`;
+              updateBalance();
+              logText(`✅ Tx confirmed | Hash: ${receipt.transactionHash}`);
+            }
+          }
+        } catch (err) {
+          logText("⚠️ ERROR: " + err.message);
+        }
+      }
+    }
+  }
+}
+</script>
+
+</body>
+</html>
